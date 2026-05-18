@@ -358,11 +358,11 @@
         <div class="weather-page" data-day="today">
           <div class="weather-left">
             <span class="weather-day">Today</span>
-            <span class="weather-temp has-real" data-field="temp" data-real="--°">--°</span>
+            <span class="weather-temp" data-field="temp">--°</span>
             <span class="weather-hilo">
-              L: <span class="has-real" data-field="lo" data-real="--°">--°</span>
+              L: <span data-field="lo">--°</span>
               <span class="sep">·</span>
-              H: <span class="has-real" data-field="hi" data-real="--°">--°</span>
+              H: <span data-field="hi">--°</span>
             </span>
             <span class="weather-condition" data-field="condition">Loading weather</span>
             <span class="weather-rain" data-field="rain"></span>
@@ -376,9 +376,9 @@
           <div class="weather-left">
             <span class="weather-day">Tomorrow</span>
             <span class="weather-hilo">
-              L: <span class="has-real" data-field="lo" data-real="--°">--°</span>
+              L: <span data-field="lo">--°</span>
               <span class="sep">·</span>
-              H: <span class="has-real" data-field="hi" data-real="--°">--°</span>
+              H: <span data-field="hi">--°</span>
             </span>
             <span class="weather-condition" data-field="condition">Loading…</span>
             <span class="weather-rain" data-field="rain"></span>
@@ -436,6 +436,7 @@
 
   <p class="hint">Tip: drag, swipe, or use the arrows</p>
 
+<script src="api.js"></script>
 <script>
   const WMO = {
     0:  { icon: "☀️", text: "Clear sky" },
@@ -486,22 +487,28 @@
   function fillPage(page, { feelsC, realC, code, feelsHi, feelsLo, realHi, realLo, rainProb, rainMm, label }) {
     const w = WMO[code] || { icon: "🌡️", text: "Unknown" };
 
-    const tempEl = page.querySelector('[data-field="temp"]');
-    if (tempEl && feelsC !== undefined) {
-      tempEl.textContent = `${feelsC}°C`;
-      tempEl.setAttribute("data-real", `${realC}°C`);
-    }
+    const fmt = (v, unit = "°") => Number.isFinite(v) ? `${v}${unit}` : `--${unit}`;
+    const setFeelsReal = (el, feels, real, unit = "°") => {
+      if (!el) return;
+      el.textContent = fmt(feels, unit);
+      if (Number.isFinite(real) && real !== feels) {
+        el.classList.add("has-real");
+        el.setAttribute("data-real", fmt(real, unit));
+      } else {
+        el.classList.remove("has-real");
+        el.removeAttribute("data-real");
+      }
+    };
 
-    const loEl = page.querySelector('[data-field="lo"]');
-    const hiEl = page.querySelector('[data-field="hi"]');
-    loEl.textContent = `${feelsLo}°`;
-    loEl.setAttribute("data-real", `${realLo}°`);
-    hiEl.textContent = `${feelsHi}°`;
-    hiEl.setAttribute("data-real", `${realHi}°`);
+    if (feelsC !== undefined) {
+      setFeelsReal(page.querySelector('[data-field="temp"]'), feelsC, realC, "°C");
+    }
+    setFeelsReal(page.querySelector('[data-field="lo"]'), feelsLo, realLo);
+    setFeelsReal(page.querySelector('[data-field="hi"]'), feelsHi, realHi);
 
     page.querySelector('[data-field="condition"]').textContent = w.text;
     page.querySelector('[data-field="icon"]').textContent      = w.icon;
-    page.querySelector('[data-field="suggest"]').textContent   = suggestOutfit(feelsC ?? feelsHi, code);
+    page.querySelector('[data-field="suggest"]').textContent   = suggestOutfit(feelsLo ?? feelsHi, code);
 
     const rainEl = page.querySelector('[data-field="rain"]');
     if (rainEl) rainEl.textContent = rainText(rainProb, rainMm);
@@ -523,11 +530,7 @@
 
   async function loadWeather() {
     const fetchWeather = async (lat, lon, label) => {
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
-        + `&current=temperature_2m,apparent_temperature,weather_code`
-        + `&daily=temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,weather_code,precipitation_probability_max,precipitation_sum`
-        + `&timezone=auto&forecast_days=2`;
-      const res = await fetch(url);
+      const res = await fetch(buildWeatherUrl(lat, lon));
       const data = await res.json();
 
       setLocation(label);
@@ -575,8 +578,7 @@
 
     const reverseGeocode = async (lat, lon) => {
       const fetchNom = async (lang) => {
-        const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=12&accept-language=${encodeURIComponent(lang)}`;
-        const res = await fetch(url);
+        const res = await fetch(buildGeocodeUrl(lat, lon, lang));
         return res.json();
       };
       const pickDistrict = (a) => a?.suburb || a?.city_district || a?.district || a?.quarter || a?.neighbourhood || a?.borough;
@@ -618,20 +620,18 @@
 
   loadWeather();
 
-  (function setupWeatherSwipe() {
-    const viewport = document.querySelector(".weather-viewport");
-    const track    = document.querySelector(".weather-track");
-    const dots     = document.querySelectorAll(".weather-dot");
-    const pages    = 2;
+  function makeSwipe(viewport, track, { count, wrap = false, onIndex }) {
     let index = 0;
     let startX = 0, currentX = 0, isDragging = false;
     let width = viewport.clientWidth;
 
-    const goTo = (i, animate = true) => {
-      index = Math.max(0, Math.min(pages - 1, i));
+    const slideTo = (i, animate = true) => {
+      index = wrap
+        ? ((i % count) + count) % count
+        : Math.max(0, Math.min(count - 1, i));
       track.classList.toggle("no-transition", !animate);
       track.style.transform = `translateX(-${index * 100}%)`;
-      dots.forEach((d, n) => d.classList.toggle("active", n === index));
+      onIndex?.(index);
     };
 
     const onStart = (x) => {
@@ -655,22 +655,36 @@
       viewport.classList.remove("dragging");
       const delta = currentX - startX;
       const threshold = width * 0.2;
-      if (delta > threshold) goTo(index - 1);
-      else if (delta < -threshold) goTo(index + 1);
-      else goTo(index);
+      if (delta > threshold) slideTo(index - 1);
+      else if (delta < -threshold) slideTo(index + 1);
+      else slideTo(index);
     };
 
     viewport.addEventListener("touchstart", e => onStart(e.touches[0].clientX), { passive: true });
     viewport.addEventListener("touchmove",  e => onMove(e.touches[0].clientX),  { passive: true });
     viewport.addEventListener("touchend",   onEnd);
-
-    viewport.addEventListener("mousedown", e => { e.preventDefault(); onStart(e.clientX); });
+    viewport.addEventListener("mousedown",  e => { e.preventDefault(); onStart(e.clientX); });
     window.addEventListener("mousemove", e => onMove(e.clientX));
     window.addEventListener("mouseup", onEnd);
 
-    dots.forEach((d, n) => d.addEventListener("click", () => goTo(n)));
+    return {
+      slideTo,
+      next: () => slideTo(index + 1),
+      prev: () => slideTo(index - 1),
+    };
+  }
 
-    goTo(0, false);
+  (function setupWeatherSwipe() {
+    const viewport = document.querySelector(".weather-viewport");
+    const track    = document.querySelector(".weather-track");
+    const dots     = document.querySelectorAll(".weather-dot");
+
+    const swipe = makeSwipe(viewport, track, {
+      count: track.children.length,
+      onIndex: (i) => dots.forEach((d, n) => d.classList.toggle("active", n === i)),
+    });
+    dots.forEach((d, n) => d.addEventListener("click", () => swipe.slideTo(n)));
+    swipe.slideTo(0, false);
   })();
 
   const wardrobe = {
@@ -708,66 +722,27 @@
     items.forEach(item => {
       const el = document.createElement("div");
       el.className = "item";
-      el.innerHTML = `<div class="item-icon">${item.icon}</div><div class="item-name">${item.name}</div>`;
+
+      const iconEl = document.createElement("div");
+      iconEl.className = "item-icon";
+      iconEl.textContent = item.icon;
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "item-name";
+      nameEl.textContent = item.name;
+
+      el.append(iconEl, nameEl);
       track.appendChild(el);
     });
 
-    let index = 0;
-    let startX = 0;
-    let currentX = 0;
-    let isDragging = false;
-    let width = viewport.clientWidth;
-
-    const updateCounter = () => {
-      counter.textContent = `${index + 1} / ${items.length}`;
-    };
-
-    const goTo = (i, animate = true) => {
-      index = (i + items.length) % items.length;
-      track.classList.toggle("no-transition", !animate);
-      track.style.transform = `translateX(-${index * 100}%)`;
-      updateCounter();
-    };
-
-    const onStart = (x) => {
-      isDragging = true;
-      startX = x;
-      currentX = x;
-      width = viewport.clientWidth;
-      viewport.classList.add("dragging");
-      track.classList.add("no-transition");
-    };
-
-    const onMove = (x) => {
-      if (!isDragging) return;
-      currentX = x;
-      const delta = currentX - startX;
-      track.style.transform = `translateX(calc(-${index * 100}% + ${delta}px))`;
-    };
-
-    const onEnd = () => {
-      if (!isDragging) return;
-      isDragging = false;
-      viewport.classList.remove("dragging");
-      const delta = currentX - startX;
-      const threshold = width * 0.2;
-      if (delta > threshold) goTo(index - 1);
-      else if (delta < -threshold) goTo(index + 1);
-      else goTo(index);
-    };
-
-    viewport.addEventListener("touchstart", e => onStart(e.touches[0].clientX), { passive: true });
-    viewport.addEventListener("touchmove", e => onMove(e.touches[0].clientX), { passive: true });
-    viewport.addEventListener("touchend", onEnd);
-
-    viewport.addEventListener("mousedown", e => { e.preventDefault(); onStart(e.clientX); });
-    window.addEventListener("mousemove", e => onMove(e.clientX));
-    window.addEventListener("mouseup", onEnd);
-
-    leftArrow.addEventListener("click", () => goTo(index - 1));
-    rightArrow.addEventListener("click", () => goTo(index + 1));
-
-    goTo(0, false);
+    const swipe = makeSwipe(viewport, track, {
+      count: items.length,
+      wrap: true,
+      onIndex: (i) => { counter.textContent = `${i + 1} / ${items.length}`; },
+    });
+    leftArrow.addEventListener("click", () => swipe.prev());
+    rightArrow.addEventListener("click", () => swipe.next());
+    swipe.slideTo(0, false);
   });
 </script>
 </body>
