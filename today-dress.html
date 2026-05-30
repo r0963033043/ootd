@@ -59,6 +59,24 @@
     line-height: 1;
   }
 
+  .weather-updated {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    color: rgba(230, 232, 235, 0.6);
+  }
+
+  .weather.loading .weather-viewport,
+  .weather.loading .weather-dots {
+    animation: weather-pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes weather-pulse {
+    0%, 100% { opacity: 0.45; }
+    50%      { opacity: 0.8; }
+  }
+
   .weather-viewport {
     overflow: hidden;
     touch-action: pan-y;
@@ -123,6 +141,14 @@
     font-size: 12px;
     opacity: 0.85;
     letter-spacing: 0.5px;
+  }
+
+  .weather-feels {
+    font-size: 10px;
+    opacity: 0.7;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-weight: 600;
   }
 
   .weather-temp {
@@ -351,16 +377,18 @@
   <h1>Today's Dress</h1>
   <p class="subtitle">Swipe each block to pick your look</p>
 
-  <div class="weather" id="weather">
+  <div class="weather loading" id="weather">
     <div class="weather-header">
       <span class="weather-pin">📍</span>
       <span data-field="location">Locating…</span>
+      <span class="weather-updated" data-field="updated"></span>
     </div>
     <div class="weather-viewport">
       <div class="weather-track">
         <div class="weather-page" data-day="today">
           <div class="weather-left">
             <span class="weather-day">Today</span>
+            <span class="weather-feels">Feels like</span>
             <span class="weather-temp" data-field="temp">--°</span>
             <span class="weather-hilo">
               L: <span data-field="lo">--°</span>
@@ -378,6 +406,7 @@
         <div class="weather-page" data-day="tomorrow">
           <div class="weather-left">
             <span class="weather-day">Tomorrow</span>
+            <span class="weather-feels">Feels like</span>
             <span class="weather-hilo">
               L: <span data-field="lo">--°</span>
               <span class="sep">·</span>
@@ -531,16 +560,60 @@
     }
   }
 
+  function setLoading(loading) {
+    document.getElementById("weather")?.classList.toggle("loading", loading);
+  }
+
+  function relativeTime(ts) {
+    const min = Math.floor((Date.now() - ts) / 60000);
+    if (min < 1)   return "just now";
+    if (min < 60)  return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24)   return `${hr}h ago`;
+    return `${Math.floor(hr / 24)}d ago`;
+  }
+
+  let lastUpdatedTs = null;
+
+  function setUpdated(ts) {
+    const el = document.querySelector('.weather-header [data-field="updated"]');
+    if (!el || !ts) return;
+    lastUpdatedTs = ts;
+    el.textContent = `Updated ${relativeTime(ts)}`;
+    el.classList.add("has-alt");
+    el.setAttribute("data-alt", new Date(ts).toLocaleString());
+  }
+
+  setInterval(() => { if (lastUpdatedTs) setUpdated(lastUpdatedTs); }, 60000);
+
+  const WEATHER_CACHE = "ootd-weather-v1";
+
+  function saveCache(payload) {
+    try { localStorage.setItem(WEATHER_CACHE, JSON.stringify(payload)); } catch {}
+  }
+
+  function restoreCache() {
+    try { return JSON.parse(localStorage.getItem(WEATHER_CACHE)); } catch { return null; }
+  }
+
+  function renderWeather({ today, tomorrow, label, ts }) {
+    if (label)    setLocation(label);
+    if (today)    fillPage(todayPage, today);
+    if (tomorrow) fillPage(tomorrowPage, tomorrow);
+    if (ts)       setUpdated(ts);
+  }
+
   async function loadWeather() {
+    const cached = restoreCache();
+    if (cached) renderWeather(cached);
+
     const fetchWeather = async (lat, lon, label) => {
       const res = await fetch(buildWeatherUrl(lat, lon));
       const data = await res.json();
 
-      setLocation(label);
-
       const roundOrNull = v => v == null ? null : Math.round(v);
 
-      fillPage(todayPage, {
+      const today = {
         feelsC:  Math.round(data.current.apparent_temperature),
         realC:   Math.round(data.current.temperature_2m),
         code:    data.current.weather_code,
@@ -550,9 +623,9 @@
         realLo:  Math.round(data.daily.temperature_2m_min[0]),
         rainProb: data.daily.precipitation_probability_max?.[0],
         rainMm:  roundOrNull(data.daily.precipitation_sum?.[0]),
-      });
+      };
 
-      fillPage(tomorrowPage, {
+      const tomorrow = {
         code:    data.daily.weather_code[1],
         feelsHi: Math.round(data.daily.apparent_temperature_max[1]),
         feelsLo: Math.round(data.daily.apparent_temperature_min[1]),
@@ -560,12 +633,18 @@
         realLo:  Math.round(data.daily.temperature_2m_min[1]),
         rainProb: data.daily.precipitation_probability_max?.[1],
         rainMm:  roundOrNull(data.daily.precipitation_sum?.[1])
-      });
+      };
+
+      const ts = Date.now();
+      renderWeather({ today, tomorrow, label, ts });
+      saveCache({ today, tomorrow, label, ts });
+      setLoading(false);
     };
 
     const fallback = async () => {
       try { await fetchWeather(25.0330, 121.5654, { local: "臺北", en: "Taipei" }); }
       catch {
+        setLoading(false);
         setLocation({ local: "Weather unavailable" });
         todayPage.querySelector('[data-field="condition"]').textContent = "";
       }
